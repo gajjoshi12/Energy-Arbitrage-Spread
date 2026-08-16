@@ -5,7 +5,7 @@
 :root{
   --bg:#F3F5F8; --surface:#FFFFFF; --stage:#FBFCFE;
   --ink:#16222E; --ink2:#43556A; --muted:#77869C; --grid:#DFE6EF; --axis:#B9C4D4;
-  --teal:#0E9480; --amber:#B26B0F;
+  --teal:#0E9480; --amber:#B26B0F; --blue:#4A6FD0;
   --tealSoft:rgba(14,148,128,.12); --amberSoft:rgba(178,107,15,.13);
   --band:rgba(67,85,106,.10);
   --line:#43556A; --shadow:0 10px 30px rgba(22,34,46,.08);
@@ -14,7 +14,7 @@
   :root:not([data-theme="light"]){
     --bg:#0C1220; --surface:#121B2C; --stage:#0F1727;
     --ink:#E9EEF6; --ink2:#B9C5D8; --muted:#7C8BA3; --grid:#1F2C44; --axis:#3A4B69;
-    --teal:#0FA38C; --amber:#C08122;
+    --teal:#0FA38C; --amber:#C08122; --blue:#5C7FD6;
     --tealSoft:rgba(15,163,140,.16); --amberSoft:rgba(192,129,34,.18);
     --band:rgba(185,197,216,.10);
     --line:#B9C5D8; --shadow:0 12px 34px rgba(0,0,0,.45);
@@ -23,7 +23,7 @@
 :root[data-theme="dark"]{
   --bg:#0C1220; --surface:#121B2C; --stage:#0F1727;
   --ink:#E9EEF6; --ink2:#B9C5D8; --muted:#7C8BA3; --grid:#1F2C44; --axis:#3A4B69;
-  --teal:#0FA38C; --amber:#C08122;
+  --teal:#0FA38C; --amber:#C08122; --blue:#5C7FD6;
   --tealSoft:rgba(15,163,140,.16); --amberSoft:rgba(192,129,34,.18);
   --band:rgba(185,197,216,.10);
   --line:#B9C5D8; --shadow:0 12px 34px rgba(0,0,0,.45);
@@ -59,7 +59,7 @@ h1{font-family:Charter,"Iowan Old Style",Georgia,serif;font-size:clamp(22px,3.4v
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--ink2)}
 .legend .li{display:flex;gap:7px;align-items:center}
 .key{width:14px;height:3px;border-radius:2px}
-.key.amber{background:var(--amber)} .key.teal{background:var(--teal)}
+.key.amber{background:var(--amber)} .key.teal{background:var(--teal)} .key.blue{background:var(--blue)}
 .key.bar{width:11px;height:9px;border-radius:3px;background:var(--line)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
 @media (max-width:840px){ .grid2{grid-template-columns:1fr} }
@@ -127,6 +127,21 @@ button.x{font:inherit;font-size:12.5px;background:none;border:none;color:var(--m
       <div class="hint">Averaged across the selected years · EUR/MWh</div>
       <div class="chartwrap sm" id="seasonChart"></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Hourly prices — pick your window</h2>
+    <div class="hint">Day-ahead price hour by hour for any period · add or remove zones ·
+      DK hours in CET, RO in EET · windows longer than 45 days switch to daily averages</div>
+    <div class="drillbar" style="margin:4px 0 10px">
+      <span id="pzChips"></span>
+      <input type="date" id="pStart" min="2015-01-01" max="2026-08-15">
+      <span style="color:var(--muted);font-size:12.5px">to</span>
+      <input type="date" id="pEnd" min="2015-01-01" max="2026-08-15">
+      <button class="go" id="pGo">Show</button>
+    </div>
+    <div class="chartwrap" id="priceChart"></div>
+    <div class="legend" id="priceLegend"></div>
   </div>
 
   <div class="drill" id="drill">
@@ -470,8 +485,121 @@ function renderDayCard(dh){
   host.appendChild(svg);
 }
 
+/* ---------- hourly price explorer (multi-zone, free window) ---------- */
+const ZCOLOR={DK1:"var(--teal)",DK2:"var(--amber)",RO:"var(--blue)"};
+const ZKEY={DK1:"teal",DK2:"amber",RO:"blue"};
+const ALLDATES=Object.keys(DATA.DK1).sort();
+const LASTDATE=ALLDATES[ALLDATES.length-1];
+const pState={zones:new Set(Object.keys(DATA))};
+{
+  const pc=$("pzChips");
+  for(const z of Object.keys(DATA)){
+    const b=document.createElement("button");b.className="chip on";b.textContent=z;
+    b.style.borderColor=ZCOLOR[z]||"var(--axis)";
+    b.addEventListener("click",()=>{
+      if(pState.zones.has(z)&&pState.zones.size>1)pState.zones.delete(z);
+      else pState.zones.add(z);
+      b.classList.toggle("on",pState.zones.has(z));renderPrices();});
+    pc.appendChild(b);
+  }
+  const d0=new Date(LASTDATE+"T00:00:00Z");d0.setUTCDate(d0.getUTCDate()-6);
+  $("pStart").value=d0.toISOString().slice(0,10);
+  $("pEnd").value=LASTDATE;
+  $("pGo").addEventListener("click",renderPrices);
+}
+function dateRange(s,e){
+  const out=[];const d=new Date(s+"T00:00:00Z");const end=new Date(e+"T00:00:00Z");
+  while(d<=end){out.push(d.toISOString().slice(0,10));d.setUTCDate(d.getUTCDate()+1);}
+  return out;
+}
+function renderPrices(){
+  const host=$("priceChart");host.replaceChildren();
+  const lg=$("priceLegend");lg.replaceChildren();
+  const s=$("pStart").value,e=$("pEnd").value;
+  if(!s||!e||e<s){host.innerHTML='<div class="empty">Pick a valid start and end date.</div>';return;}
+  const dates=dateRange(s,e);
+  const daily=dates.length>45;
+  const zs=Object.keys(DATA).filter(z=>pState.zones.has(z));
+  // build series
+  const series={};let n=0;
+  for(const z of zs){
+    const pts=[];
+    for(const d of dates){
+      const arr=DATA[z][d];
+      if(daily){
+        const v=arr?arr.filter(x=>x!=null):[];
+        pts.push(v.length?v.reduce((a,b)=>a+b,0)/v.length:null);
+      }else{
+        for(let h=0;h<24;h++)pts.push(arr&&h<arr.length?arr[h]:null);
+      }
+    }
+    series[z]=pts;n=pts.length;
+  }
+  const lab=i=>daily?dates[i]:dates[Math.floor(i/24)].slice(5)+" "+String(i%24).padStart(2,"0")+":00";
+  let lo=Infinity,hi=-Infinity;
+  zs.forEach(z=>series[z].forEach(v=>{if(v!=null){lo=Math.min(lo,v);hi=Math.max(hi,v);}}));
+  if(!isFinite(lo)){host.innerHTML='<div class="empty">No data in this window.</div>';return;}
+  lo=Math.min(0,lo);const pad=(hi-lo)*.06||1;hi+=pad;if(lo<0)lo-=pad;
+  const W=Math.max(720,Math.min(2600,n*(daily?6:2.2)))|0,H=330,m={l:48,r:40,t:16,b:34};
+  const iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const X=i=>m.l+(n===1?iw/2:i/(n-1)*iw),Y=v=>m.t+ih-(v-lo)/(hi-lo)*ih;
+  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":"hourly prices"});
+  svg.style.minWidth=Math.min(1400,Math.max(620,n*(daily?4:1.4)))+"px";
+  const step=Math.max(10,Math.ceil((hi-lo)/5/25)*25);
+  for(let v=Math.ceil(lo/step)*step;v<=hi;v+=step){
+    svg.appendChild(el("line",{x1:m.l,x2:W-m.r,y1:Y(v),y2:Y(v),stroke:"var(--grid)"}));
+    const t=el("text",{x:m.l-7,y:Y(v)+4,"text-anchor":"end",fill:"var(--muted)","font-size":11});
+    t.textContent=v;svg.appendChild(t);
+  }
+  if(lo<0)svg.appendChild(el("line",{x1:m.l,x2:W-m.r,y1:Y(0),y2:Y(0),
+    stroke:"var(--axis)","stroke-dasharray":"4 4"}));
+  const tickEvery=Math.max(1,Math.ceil(dates.length/10));
+  dates.forEach((d,di)=>{
+    if(di%tickEvery)return;
+    const i=daily?di:di*24;
+    const t=el("text",{x:X(i),y:H-9,"text-anchor":"middle",fill:"var(--muted)","font-size":10.5});
+    t.textContent=d.slice(5);svg.appendChild(t);
+    if(!daily&&dates.length<=14)svg.appendChild(el("line",{x1:X(i),x2:X(i),y1:m.t,y2:m.t+ih,
+      stroke:"var(--grid)","stroke-dasharray":"2 4"}));
+  });
+  for(const z of zs){
+    let d="",pen=false;
+    series[z].forEach((v,i)=>{
+      if(v==null){pen=false;return;}
+      d+=(pen?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1);pen=true;
+    });
+    svg.appendChild(el("path",{d,fill:"none",stroke:ZCOLOR[z]||"var(--line)",
+      "stroke-width":1.9,"stroke-linejoin":"round","stroke-linecap":"round"}));
+  }
+  // direct end labels
+  const ends=zs.map(z=>{const a=series[z];let i=n-1;while(i>=0&&a[i]==null)i--;
+    return i>=0?{z,y:Y(a[i])}:null;}).filter(Boolean).sort((a,b)=>a.y-b.y);
+  let ok=true;for(let i=1;i<ends.length;i++)if(ends[i].y-ends[i-1].y<13)ok=false;
+  if(ok)for(const p of ends){const t=el("text",{x:W-m.r+5,y:p.y+4,fill:ZCOLOR[p.z],
+    "font-size":11.5,"font-weight":700});t.textContent=p.z;svg.appendChild(t);}
+  // crosshair
+  const cross=el("line",{y1:m.t,y2:m.t+ih,stroke:"var(--axis)",visibility:"hidden"});
+  svg.appendChild(cross);
+  svg.addEventListener("pointermove",ev=>{
+    const r=svg.getBoundingClientRect();
+    let i=Math.round(((ev.clientX-r.left)/r.width*W-m.l)/iw*(n-1));
+    i=Math.max(0,Math.min(n-1,i));
+    cross.setAttribute("x1",X(i));cross.setAttribute("x2",X(i));cross.setAttribute("visibility","visible");
+    const rows=zs.map(z=>({z,v:series[z][i]})).filter(x=>x.v!=null).sort((a,b)=>b.v-a.v);
+    showTT("<b>"+lab(i)+(daily?" · daily avg":"")+"</b><br>"+
+      rows.map(x=>x.z+": <b>"+fmt(x.v,2)+"</b>").join("<br>"),ev.clientX,ev.clientY);
+  });
+  svg.addEventListener("pointerleave",()=>{cross.setAttribute("visibility","hidden");hideTT();});
+  host.appendChild(svg);
+  for(const z of zs){
+    const li=document.createElement("span");li.className="li";
+    li.innerHTML=`<span class="key ${ZKEY[z]||""}"></span>${z}${daily?" · daily average":""}`;
+    lg.appendChild(li);
+  }
+}
+
 function renderAll(){
-  renderKpis();renderBand();renderYear();renderSeason();renderDrill();
+  renderKpis();renderBand();renderYear();renderSeason();renderDrill();renderPrices();
 }
 {
   const qd=new URLSearchParams(location.search).get("day");
