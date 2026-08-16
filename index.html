@@ -118,9 +118,12 @@ button.x{font:inherit;font-size:12.5px;background:none;border:none;color:var(--m
 
   <div class="grid2">
     <div class="card">
-      <h2>Average daily spread by year</h2>
-      <div class="hint">EUR/MWh per day of battery capacity · hover for details</div>
+      <h2>Spread growth by year</h2>
+      <div class="hint">Average daily spread per year · add or remove zones · hover for
+        year-over-year change · EUR/MWh</div>
+      <div class="drillbar" style="margin:2px 0 8px"><span id="yzChips"></span></div>
       <div class="chartwrap sm" id="yearChart"></div>
+      <div class="legend" id="yearLegend"></div>
     </div>
     <div class="card">
       <h2>Seasonality — spread by calendar month</h2>
@@ -315,35 +318,85 @@ function renderBand(){
   tw.appendChild(tbl);
 }
 
-/* ---------- yearly bars ---------- */
+/* ---------- yearly spread growth (multi-zone lines) ---------- */
+const yState={zones:null};   // built lazily once ZCOLOR/DATA exist
 function renderYear(){
   const host=$("yearChart");host.replaceChildren();
-  const rows=sel();
-  const ys={};rows.forEach(r=>{(ys[r.d.slice(0,4)]=ys[r.d.slice(0,4)]||[]).push(r.sp);});
-  const Y_=Object.keys(ys).sort().map(y=>({y,v:ys[y].reduce((a,b)=>a+b,0)/ys[y].length,n:ys[y].length}));
-  if(!Y_.length){host.innerHTML='<div class="empty">No years selected.</div>';return;}
-  const W=520,H=250,m={l:44,r:10,t:14,b:30};
+  const lg=$("yearLegend");lg.replaceChildren();
+  if(!yState.zones){
+    yState.zones=new Set(Object.keys(DATA));
+    const yc=$("yzChips");
+    for(const z of Object.keys(DATA)){
+      const b=document.createElement("button");b.className="chip on";b.textContent=z;
+      b.style.borderColor=ZCOLOR[z]||"var(--axis)";
+      b.addEventListener("click",()=>{
+        if(yState.zones.has(z)&&yState.zones.size>1)yState.zones.delete(z);
+        else yState.zones.add(z);
+        b.classList.toggle("on",yState.zones.has(z));renderYear();});
+      yc.appendChild(b);
+    }
+  }
+  const years=YEARS.filter(y=>state.years.has(y));
+  if(!years.length){host.innerHTML='<div class="empty">No years selected.</div>';return;}
+  const zs=Object.keys(DATA).filter(z=>yState.zones.has(z));
+  const V={};   // zone -> per-year avg spread
+  for(const z of zs){
+    V[z]=years.map(y=>{
+      const rows=REC[z].filter(r=>r.d.slice(0,4)===y);
+      return rows.length?rows.reduce((a,r)=>a+r.sp,0)/rows.length:null;
+    });
+  }
+  let hi=0;zs.forEach(z=>V[z].forEach(v=>{if(v!=null)hi=Math.max(hi,v);}));
+  hi*=1.14;
+  const W=520,H=250,m={l:44,r:34,t:14,b:30};
   const iw=W-m.l-m.r,ih=H-m.t-m.b;
-  const hi=Math.max(...Y_.map(x=>x.v))*1.15;
-  const X=i=>m.l+(i+.5)/Y_.length*iw, YY=v=>m.t+ih-v/hi*ih, bw=Math.min(58,iw/Y_.length*.62);
-  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":"average daily spread per year"});
+  const n=years.length;
+  const X=i=>m.l+(n===1?iw/2:i/(n-1)*iw), YY=v=>m.t+ih-v/hi*ih;
+  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":"spread growth per year by zone"});
   for(let v=0;v<=hi;v+=hi>120?50:25){
     svg.appendChild(el("line",{x1:m.l,x2:W-m.r,y1:YY(v),y2:YY(v),stroke:"var(--grid)"}));
     const t=el("text",{x:m.l-7,y:YY(v)+4,"text-anchor":"end",fill:"var(--muted)","font-size":11});
     t.textContent=Math.round(v);svg.appendChild(t);
   }
-  Y_.forEach((x,i)=>{
-    const r=el("rect",{x:X(i)-bw/2,y:YY(x.v),width:bw,height:YY(0)-YY(x.v),rx:4,fill:"var(--line)"});
-    r.addEventListener("pointermove",ev=>showTT(
-      `<b>${x.y}</b><br>avg daily spread: <b>${fmt(x.v)}</b> €/MWh<br>${x.n} days`,ev.clientX,ev.clientY));
-    r.addEventListener("pointerleave",hideTT);
-    svg.appendChild(r);
-    const t=el("text",{x:X(i),y:YY(x.v)-7,"text-anchor":"middle",fill:"var(--ink)","font-size":12,"font-weight":700});
-    t.textContent=fmt(x.v,0);svg.appendChild(t);
-    const t2=el("text",{x:X(i),y:H-9,"text-anchor":"middle",fill:"var(--muted)","font-size":11.5});
-    t2.textContent=x.y;svg.appendChild(t2);
+  years.forEach((y,i)=>{
+    if(n>8&&i%2)return;
+    const t=el("text",{x:X(i),y:H-9,"text-anchor":"middle",fill:"var(--muted)","font-size":11});
+    t.textContent=y;svg.appendChild(t);
   });
+  for(const z of zs){
+    let d="",pen=false;
+    V[z].forEach((v,i)=>{if(v==null){pen=false;return;}
+      d+=(pen?"L":"M")+X(i).toFixed(1)+" "+YY(v).toFixed(1);pen=true;});
+    svg.appendChild(el("path",{d,fill:"none",stroke:ZCOLOR[z]||"var(--line)",
+      "stroke-width":2.2,"stroke-linejoin":"round"}));
+    V[z].forEach((v,i)=>{if(v==null)return;
+      svg.appendChild(el("circle",{cx:X(i),cy:YY(v),r:3.4,fill:ZCOLOR[z]||"var(--line)",
+        stroke:"var(--surface)","stroke-width":1.6}));});
+  }
+  // direct end labels
+  const ends=zs.map(z=>{const a=V[z];let i=n-1;while(i>=0&&a[i]==null)i--;
+    return i>=0?{z,y:YY(a[i])}:null;}).filter(Boolean).sort((a,b)=>a.y-b.y);
+  let ok=true;for(let i=1;i<ends.length;i++)if(ends[i].y-ends[i-1].y<13)ok=false;
+  if(ok)for(const p of ends){const t=el("text",{x:W-m.r+5,y:p.y+4,fill:ZCOLOR[p.z],
+    "font-size":11,"font-weight":700});t.textContent=p.z;svg.appendChild(t);}
+  // hover: nearest year, all zones + YoY
+  svg.addEventListener("pointermove",ev=>{
+    const r=svg.getBoundingClientRect();
+    let i=Math.round(((ev.clientX-r.left)/r.width*W-m.l)/iw*(n-1));
+    i=Math.max(0,Math.min(n-1,i));
+    const rows=zs.map(z=>{
+      const v=V[z][i],p=i>0?V[z][i-1]:null;
+      const yoy=(v!=null&&p!=null&&p!==0)?" ("+(v>=p?"+":"")+Math.round(100*(v-p)/p)+"% YoY)":"";
+      return v!=null?z+": <b>"+fmt(v)+"</b>"+yoy:null;
+    }).filter(Boolean);
+    showTT("<b>"+years[i]+"</b><br>"+rows.join("<br>"),ev.clientX,ev.clientY);
+  });
+  svg.addEventListener("pointerleave",hideTT);
   host.appendChild(svg);
+  for(const z of zs){
+    const li=document.createElement("span");li.className="li";
+    li.innerHTML=`<span class="key ${ZKEY[z]||""}"></span>${z}`;lg.appendChild(li);
+  }
 }
 
 /* ---------- seasonality ---------- */
