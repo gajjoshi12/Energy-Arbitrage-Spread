@@ -97,7 +97,8 @@ button.x{font:inherit;font-size:12.5px;background:none;border:none;color:var(--m
 <div class="wrap">
   <h1>Energy Spread Explorer</h1>
   <div class="sub">Day-ahead price spreads for battery arbitrage · DK1 · DK2 · RO · Jan 2015 – Aug 2026 ·
-    ENTSO-E data · spread = avg of each day's <span class="nH">4</span> highest hours − avg of its 3 lowest</div>
+    ENTSO-E data · spread = avg of each day's <span class="nH">4</span> highest hours − avg of its cheapest
+    <b>consecutive</b> 3-hour charging window</div>
 
   <div class="bar"><span class="lbl">Zone</span><span id="zoneChips"></span>
     <span class="lbl" style="margin-left:14px">Years</span><span id="yearChips"></span>
@@ -108,12 +109,12 @@ button.x{font:inherit;font-size:12.5px;background:none;border:none;color:var(--m
   <div class="kpis" id="kpis"></div>
 
   <div class="card">
-    <h2>Monthly averages — high <span class="nH">4</span> vs low 3</h2>
+    <h2>Monthly averages — high <span class="nH">4</span> vs 3-hour charge window</h2>
     <div class="hint">The shaded gap between the lines is the money · click any month to inspect its days · EUR/MWh</div>
     <div class="chartwrap" id="bandChart"></div>
     <div class="legend">
       <span class="li"><span class="key amber"></span>avg of daily highest-<span class="nH">4</span> hours</span>
-      <span class="li"><span class="key teal"></span>avg of daily lowest-3 hours</span>
+      <span class="li"><span class="key teal"></span>avg of cheapest consecutive 3 h (charging window)</span>
       <span class="li"><span class="key" style="background:var(--band);width:14px;height:10px"></span>spread</span>
     </div>
     <details class="tbl"><summary>View monthly table</summary><div class="twrap" id="monthTable"></div></details>
@@ -167,8 +168,9 @@ button.x{font:inherit;font-size:12.5px;background:none;border:none;color:var(--m
 
   <p class="foot">Every number on this page is computed live from the embedded hourly day-ahead prices
   (ENTSO-E Transparency Platform; DK1/DK2 hours in CET, RO hours in EET; 2015–2025 full years,
-  2026 through 15 Aug). Same data as the Excel files — daily lowest-3 / highest-N convention,
-  with N selectable in the "Sell window" control above (2–12 hours).
+  2026 through 15 Aug). Same data as the Excel files. Convention: the buy side is the cheapest
+  <b>consecutive</b> 3-hour block (charging happens once, not in scattered hours); the sell side
+  is the average of the N highest hours, with N selectable in the "Sell window" control (2–12 h).
   RO prices before Jun 2021 are RON→EUR converted at BNR annual-average FX (ENTSO-E published
   Romania in RON until SDAC go-live). 2021–2022 include the gas-crisis period; treat those
   spreads as exceptional.</p>
@@ -186,10 +188,17 @@ for (const z in DATA) {
     const P = DATA[z][d];
     const s = [...P].filter(x => x != null).sort((a, b) => b - a);   // descending
     if (s.length < 12) return null;
-    const lo = (s[s.length-1] + s[s.length-2] + s[s.length-3]) / 3;
+    // charging happens ONCE: the low side is the cheapest CONSECUTIVE 3-hour block
+    let lo = null, loStart = -1;
+    for (let i = 0; i + 2 < P.length; i++) {
+      if (P[i] == null || P[i+1] == null || P[i+2] == null) continue;
+      const v = (P[i] + P[i+1] + P[i+2]) / 3;
+      if (lo == null || v < lo) { lo = v; loStart = i; }
+    }
+    if (lo == null) return null;
     const pre = [0];                                  // prefix sums of the sorted prices
     for (let i = 0; i < s.length; i++) pre.push(pre[i] + s[i]);
-    return { d, lo, hi: 0, sp: 0, pre, prices: P };
+    return { d, lo, loStart, hi: 0, sp: 0, pre, prices: P };
   }).filter(Boolean);
 }
 let HN = 4;                                           // sell window: avg of the HN highest hours
@@ -265,7 +274,7 @@ function renderKpis(){
     host.appendChild(d);};
   mk("Avg daily spread",fmt(avg(r=>r.sp))+" €", state.zone+" · "+rows.length+" days","teal");
   mk("Avg highest-"+HN+" hours",fmt(avg(r=>r.hi))+" €","sell-side price level","amber");
-  mk("Avg lowest-3 hours",fmt(avg(r=>r.lo))+" €","buy-side price level");
+  mk("Avg 3-h charging window",fmt(avg(r=>r.lo))+" €","cheapest consecutive block · buy side");
   mk("Best single day",fmt(best.sp,0)+" €",best.d+" — click Inspect to verify");
   mk("Days over 100 € spread",rows.filter(r=>r.sp>100).length+"",
      fmt(100*rows.filter(r=>r.sp>100).length/rows.length)+"% of days");
@@ -326,7 +335,7 @@ function renderBand(){
   const tw=$("monthTable");tw.replaceChildren();
   const tbl=document.createElement("table");
   const tr0=tbl.insertRow();
-  ["Month","Days","Avg lowest 3","Avg highest "+HN,"Spread"].forEach(h=>{
+  ["Month","Days","Avg charge window (3 h)","Avg highest "+HN,"Spread"].forEach(h=>{
     const th=document.createElement("th");th.textContent=h;tr0.appendChild(th);});
   M.forEach(x=>{const tr=tbl.insertRow();
     tr.insertCell().textContent=x.m;
@@ -478,7 +487,7 @@ function renderDrill(){
   // daily spread bars
   const card=document.createElement("div");card.className="card";
   card.innerHTML=`<h2>Daily spreads · ${MN[+state.drillMonth.slice(5)-1]} ${state.drillMonth.slice(0,4)} · ${state.zone}</h2>
-    <div class="hint">avg highest-${HN} − avg lowest-3, per day · click a day for its 24 hours</div>
+    <div class="hint">avg highest-${HN} − cheapest consecutive 3 h, per day · click a day for its 24 hours</div>
     <div class="chartwrap"></div>`;
   mh.appendChild(card);
   const host=card.querySelector(".chartwrap");
@@ -497,7 +506,7 @@ function renderDrill(){
     const b=el("rect",{x:X(i)-bw/2,y:YY(r.sp),width:bw,height:YY(0)-YY(r.sp),rx:3,
       fill:sel_?"var(--amber)":"var(--teal)",opacity:sel_?1:.85,cursor:"pointer"});
     b.addEventListener("pointermove",ev=>showTT(
-      `<b>${r.d}</b><br>spread: <b>${fmt(r.sp)}</b><br>high-${HN}: ${fmt(r.hi)} · low-3: ${fmt(r.lo)}<br><i>click for hours</i>`,
+      `<b>${r.d}</b><br>spread: <b>${fmt(r.sp)}</b><br>high-${HN}: ${fmt(r.hi)} · charge window: ${fmt(r.lo)}<br><i>click for hours</i>`,
       ev.clientX,ev.clientY));
     b.addEventListener("pointerleave",hideTT);
     b.addEventListener("click",()=>openDay(r.d));
@@ -517,12 +526,14 @@ function renderDayCard(dh){
   if(!rec){dh.innerHTML='<div class="empty">No data for '+state.drillDay+' in '+state.zone+'.</div>';return;}
   const P=rec.prices;
   const idx=P.map((p,i)=>[p,i]).filter(x=>x[0]!=null).sort((a,b)=>a[0]-b[0]);
-  const loI=new Set(idx.slice(0,3).map(x=>x[1]));
-  const hiI=new Set(idx.slice(-HN).map(x=>x[1]));
+  const loI=new Set([rec.loStart,rec.loStart+1,rec.loStart+2]);
+  const hiI=new Set(idx.slice(-HN).map(x=>x[1]).filter(i=>!loI.has(i)));
   const card=document.createElement("div");card.className="card";
   card.innerHTML=`<h2>${state.drillDay} · ${state.zone} · hour by hour</h2>
-    <div class="hint">teal = the 3 cheapest hours (avg ${fmt(rec.lo,2)}) ·
-      amber = the ${HN} most expensive (avg ${fmt(rec.hi,2)}) ·
+    <div class="hint">teal = cheapest consecutive 3-hour charging window,
+      ${String(rec.loStart).padStart(2,"0")}:00–${String(rec.loStart+3).padStart(2,"0")}:00
+      (avg ${fmt(rec.lo,2)}) ·
+      amber = the ${HN} most expensive hours (avg ${fmt(rec.hi,2)}) ·
       spread <b>${fmt(rec.sp,2)} €/MWh</b> — matches the Excel row exactly</div>
     <div class="chartwrap"></div>`;
   dh.appendChild(card);
@@ -548,7 +559,7 @@ function renderDayCard(dh){
       fill:col,opacity:loI.has(i)||hiI.has(i)?.95:.55});
     b.addEventListener("pointermove",ev=>showTT(
       `<b>${String(i).padStart(2,"0")}:00</b> · ${fmt(p,2)} €/MWh`+
-      (loI.has(i)?"<br><i>one of the 3 cheapest</i>":hiI.has(i)?"<br><i>one of the "+HN+" most expensive</i>":""),
+      (loI.has(i)?"<br><i>in the charging window</i>":hiI.has(i)?"<br><i>one of the "+HN+" most expensive</i>":""),
       ev.clientX,ev.clientY));
     b.addEventListener("pointerleave",hideTT);
     svg.appendChild(b);
